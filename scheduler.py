@@ -25,7 +25,7 @@ class Task:
   def __repr__(self):
     extra = ""
     if self.deadline:
-      extra += ", %i" % self.deadline
+      extra += ", %s" % self.deadline
 
     return "Task(%r, %i%s)" % (self.name, self.length, extra)
 
@@ -83,6 +83,9 @@ class Task:
       return now
     else:
       return self.start_before
+  
+  def earlist_finish(self, now):
+    return self.earlist_run(now) + self.length
 
   # Methods which should be overridden
   # -------------------------------------------------
@@ -92,12 +95,6 @@ class Task:
 
 
 class DiscardIfLateTask(Task):
-  def on_discard(self, now):
-    """
-    Args:
-      now (int): Time now.
-    """
-
   def __init__(self, *args, **kw):
     Task.__init__(self, *args, **kw)
     self.discard_enable = True
@@ -107,7 +104,7 @@ class DiscardIfLateTask(Task):
 
   def run(self, scheduler, now):
     # As we are running now, clear any adjustment
-    self.adjustment = 0
+    self.adjust(None)
 
     # If we are late, call on_discard and then finish
     if self.should_discard(now):
@@ -128,14 +125,17 @@ class DiscardIfLateTask(Task):
 class Scheduler:
   sentinel_task = Task("sentinel", 0, deadline=infinity, run_early=False)
 
+  def __lt__(self, other):
+    return self.name < other.name
+
   def __init__(self):
     self.deadline_queue = bdeque()
     self.task_queue = bdeque()
 
-  def pending_tasks(self):
+  def _pending_tasks(self):
     return len(self.deadline_queue) + len(self.task_queue)
 
-  def next_task(self, now):
+  def _next_task(self, now):
     task = self.sentinel_task
 
     # Do we have a deadline tasks that might need to run?
@@ -148,17 +148,24 @@ class Scheduler:
       if task.start_before >= now + self.task_queue.front().length:
         task = self.task_queue.front()
 
+      # Else keep running deadline tasks early until we can fit this task.
+      elif self.deadline_queue:
+        task = self.deadline_queue.front()
+        task.adjust(now - task.start_before)
+
     return task
 
-  def remove(self, task):
+  def _remove(self, task):
     if task in self.deadline_queue:
-      return self.deadline_queue.remove(task)
+      self.deadline_queue.remove(task)
+      return
     if task in self.task_queue:
-      return self.task_queue.remove(task)
+      self.task_queue.remove(task)
+      return
     raise ValueError("%s not scheduled!" % task)
 
   def run_next(self, now):
-    task = self.next_task(now)
+    task = self._next_task(now)
     assert task.start_before != infinity
 
     # Advance the time if the next task can't run right now.
@@ -166,26 +173,36 @@ class Scheduler:
     if run_early > now:
       now = run_early
 
-    self.remove(task)
+    self._remove(task)
     return task.run(self, now)
 
   def run_all(self, initial_time = 0):
+    count = 0
+
     now = initial_time
-    while self.pending_tasks() > 0:
+    while self._pending_tasks() > 0:
       now = self.run_next(now)
+      count +=1
+      if count > 100:
+        raise SystemError()
+
       assert now != infinity
     return now
 
   def add_task(self, new_task):
+    assert new_task
+
     if not new_task.start_before:
       self.task_queue.back_push(new_task)
       return
 
     # Clear any previous adjustments
     new_task.adjust(None)
-    self.add_deadline_task(new_task)
+    self._add_deadline_task(new_task)
 
-  def add_deadline_task(self, new_task):
+  def _add_deadline_task(self, new_task):
+    assert new_task
+
     # Unqueue any deadline task which will occur after this task
     previous_task = None
     tasks_after_new_task = []
@@ -193,10 +210,11 @@ class Scheduler:
       previous_task = self.deadline_queue.back()
       if previous_task.start_before < new_task.start_before:
         break
-      tasks_after_new_task.append(self.remove(previous_task))
+      self._remove(previous_task)
+      tasks_after_new_task.append(previous_task)
 
     # Will the task before this one cause our deadline to be missed
-    if previous_task and previous_task.finish_latest >= new_task.start_before:
+    if self.deadline_queue and previous_task and previous_task.finish_latest >= new_task.start_before:
       # To allow this task to meet the deadline, we need to make the task
       # before this one run earlier.
       # We remove the previous task from the queue, adjust the deadline and try
@@ -204,9 +222,9 @@ class Scheduler:
       # cause the task before it to also need adjustment.
       # Effectively their will be a ripple effect moving the deadline of all
       # earlier tasks forward.
-      self.remove(previous_task)
+      self._remove(previous_task)
       previous_task.adjust(new_task.start_before - previous_task.finish_latest)
-      self.add_deadline_task(previous_task)
+      self._add_deadline_task(previous_task)
 
     self.deadline_queue.back_push(new_task)
 
@@ -215,7 +233,7 @@ class Scheduler:
     # these tasks to miss their deadline. Instead we add them just like being a
     # new task.
     for task in tasks_after_new_task:
-      self.add_deadline_task(task)
+      self._add_deadline_task(task)
 
 
 class SchedulerTracer:
@@ -223,54 +241,76 @@ class SchedulerTracer:
     self.adds = []
     self.runs = []
 
+    self.schedulers = 0
+    self.trace_scheduler(scheduler)
+
+  def trace_scheduler(self, scheduler):
+    self.schedulers += 1
+
     scheduler_add_task = scheduler.add_task
     def bind_on_add_task(new_task):
-      self.on_add(new_task)
-      self.trace(new_task)
+      self.on_add(scheduler, new_task)
+      self.trace_task(new_task)
       scheduler_add_task(new_task)
     scheduler.add_task = bind_on_add_task
 
-  @property
-  def now(self):
-    if not hasattr(self, '_now'):
-      return "XXXXX"
-    return "%05i" % self._now
+    scheduler.traced = True
 
-  @now.setter
-  def now(self, n):
+  def get_str(self, name, scheduler, task):
+    prefix = ""
+    if self.schedulers > 1:
+      prefix = scheduler.name + ' @ '
+
+    if not hasattr(self, '_now'):
+      now = "XXXXX"
+    else:
+      now = "%05i" % self._now
+
+    return "%s%s: %s %s" % (prefix, now, name, task)
+
+  def set_now(self, n):
+    assert not hasattr(self, '_now') or self._now <= n, "%s %s" % (getattr(self, '_now', None), n)
     self._now = n
 
-  def on_add(self, task):
-    self.adds.append("%s: Adding %s" % (self.now, task))
+  def on_add(self, scheduler, task):
+    assert scheduler.traced == True
+    self.adds.append(self.get_str("Adding", scheduler, task))
 
-  def on_run(self, task, now):
-    self.now = now
-    self.runs.append("%s: Running %s" % (self.now, task))
+  def on_run(self, scheduler, task):
+    assert scheduler.traced == True
+    self.runs.append(self.get_str("Running", scheduler, task))
 
-  def on_discard(self, task, now):
-    self.now = now
-    self.runs.append("%s: Discarding %s" % (self.now, task))
+  def on_discard(self, scheduler, task):
+    assert scheduler.traced == True
+    self.runs.append(self.get_str("Discarding", scheduler, task))
 
-  def trace(self, task):
+  def trace_task(self, task):
+    if hasattr(task, "traced"):
+      return task
+
     task_on_run = task.on_run
     def bind_on_run(scheduler, now):
-      self.on_run(task, now)
+      self.set_now(now)
+      self.on_run(scheduler, task)
       task_on_run(scheduler, now)
+      #self.set_now(now+task.length)
     task.on_run = bind_on_run
 
     if hasattr(task, "on_discard"):
       task_on_discard = task.on_discard
       def bind_on_discard(scheduler, now):
-        self.on_discard(task, now)
+        self.set_now(now)
+        self.on_discard(scheduler, task)
         task_on_discard(scheduler, now)
       task.on_discard = bind_on_discard
 
+    task.traced = True
     return task
 
 
 import unittest
 
-class SchedulerTest(unittest.TestCase):
+class SchedulerTestExtra:
 
   def setUp(self):
     self.s = Scheduler()
@@ -279,19 +319,27 @@ class SchedulerTest(unittest.TestCase):
   def add_task(self, task):
     self.s.add_task(task)
 
-  def assertAdds(self, number=None, *expected):
-    if expected:
-      self.assertEqual("\n".join(self.t.adds), "\n".join(expected))
+  def assertAdds(self, first, *expected):
+    if isinstance(first, int):
+      assert not expected, repr([first]+list(expected))
+      self.assertEqual(first, len(self.t.adds))
+    else:
+      self.assertEqual("\n".join(self.t.adds)+"\n", "\n".join([first]+list(expected))+"\n")
 
-    self.assertEqual(number, len(self.t.adds))
     self.t.adds = []
 
   def assertRun(self, *expected, start_at=None, end_at=None):
     now_at_end = self.s.run_all(start_at or 0)
-    self.assertEqual("\n".join(self.t.runs), "\n".join(expected))
+    self.assertEqual("\n".join(self.t.runs)+"\n", "\n".join(expected)+"\n")
     if end_at:
       self.assertEqual(end_at, now_at_end)
     self.t.runs = []
+
+
+class SchedulerTest(unittest.TestCase, SchedulerTestExtra):
+
+  def setUp(self):
+    SchedulerTestExtra.setUp(self)
 
   def test_simple_tasks_without_deadlines(self):
     self.add_task(Task("A", 30))
@@ -326,6 +374,18 @@ class SchedulerTest(unittest.TestCase):
       "00040: Running Task('A', 10, 50)",
       "00090: Running Task('B', 10, 100)",
       end_at=100)
+
+  def test_simple_add_tasks_out_of_order_with_deadlines(self):
+    self.add_task(Task("B", 10, deadline=100))
+    self.add_task(Task("A", 10, deadline=50))
+    self.add_task(Task("C", 10, deadline=20))
+    self.assertAdds(3)
+    self.assertRun(
+      "00010: Running Task('C', 10, 20)",
+      "00040: Running Task('A', 10, 50)",
+      "00090: Running Task('B', 10, 100)",
+      end_at=100)
+
 
   def test_multiple_deadline_with_run_early(self):
     self.add_task(Task("A", 10, deadline=50, run_early=True))
@@ -385,9 +445,31 @@ class SchedulerTest(unittest.TestCase):
     self.assertRun(
       "00000: Running Task('A', 10)",
       "00010: Running Task('C', 10)",
-      "00040: Running Task('B', 10, 50)",
-      "00050: Running Task('D', 50)",
-      end_at=100)
+      "00020: Running Task('B', 10, 50)",
+      "00030: Running Task('D', 50)",
+      end_at=80)
+
+  def test_mixed_too_large(self):
+    self.add_task(Task("A1", 5, deadline=10))
+    self.add_task(Task("A2", 5, deadline=20))
+    self.add_task(Task("A3", 5, deadline=30))
+    self.add_task(Task("A4", 5, deadline=40))
+    self.add_task(Task("A5", 5, deadline=50))
+    self.add_task(Task("A6", 5, deadline=60))
+    self.add_task(Task("A7", 5, deadline=70))
+    self.add_task(Task("B", 20))
+    self.add_task(Task("C", 10))
+    self.assertRun(
+      "00000: Running Task('A1', 5, 10)",
+      "00005: Running Task('A2', 5, 20)",
+      "00010: Running Task('A3', 5, 30)",
+      "00015: Running Task('B', 20)",
+      "00035: Running Task('A4', 5, 40)",
+      "00040: Running Task('A5', 5, 50)",
+      "00045: Running Task('C', 10)",
+      "00055: Running Task('A6', 5, 60)",
+      "00065: Running Task('A7', 5, 70)",
+      end_at=70)
 
 
 if __name__ == '__main__':
