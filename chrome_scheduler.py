@@ -1,6 +1,7 @@
 #!/bin/env python3
 
 import math
+import logging
 from scheduler import *
 
 
@@ -63,19 +64,19 @@ class MainTask(DiscardIfLateTask):
 
   def should_requeue_without_discard(self, now):
     time_missed_by = now - self.start_before
-    print("Should discard - missed by %s" % (time_missed_by/ms))
+    logging.debug("Should discard - missed by %s" % (time_missed_by/ms))
 
     # Optimisation
     # We are going to miss the deadline by a short period but haven't missed
     # any previous frames, lets give it a chance.
     if time_missed_by < 1*ms and self.state.discarded_main_frames == 0:
-      print("ReQ because it's close.")
+      logging.debug("ReQ because it's close.")
       return True
 
     # If we have missed the deadline by more then a frame interval, then this
     # task is horribly out of date and we should just discard it.
     #if time_missed_by > self.state.frame_interval:
-    #  print("Not because its too old.")
+    #  logging.debug("Not because its too old.")
     #  return False
 
     # Otherwise, we need to figure out if attempting this main task will mean
@@ -89,7 +90,7 @@ class MainTask(DiscardIfLateTask):
       # If the main thread can render twice a frame then starting rendering
       # shouldn't cause the next frame to miss it's deadline. Hence we should
       # just try and catch up here.
-      print("ReQ because can't miss. %0.4f%%" % main_percentage_of_interval)
+      logging.debug("ReQ because can't miss. %0.4f%%" % main_percentage_of_interval)
       return True
 
     if main_percentage_of_interval >= 1.0:
@@ -105,7 +106,7 @@ class MainTask(DiscardIfLateTask):
         # the highest throughput.
         self.deadline = None
 
-      print("ReQ because always miss - new deadline %s. %0.4f%%" % (self.deadline, main_percentage_of_interval))
+      logging.debug("ReQ because always miss - new deadline %s. %0.4f%%" % (self.deadline, main_percentage_of_interval))
       return True
 
     # For percentages between 0.5 and 1.0 then starting rendering too late
@@ -115,10 +116,10 @@ class MainTask(DiscardIfLateTask):
     # task.
     next_task = self.next_task()
     if not next_task.discard_enable:
-      print("Not because next_task can't be discarded. %0.4f%%" % main_percentage_of_interval)
+      logging.debug("Not because next_task can't be discarded. %0.4f%%" % main_percentage_of_interval)
       return False
 
-    print("ReQ with new deadline - %i. %0.4f%%" % (self.deadline, main_percentage_of_interval))
+    logging.debug("ReQ with new deadline - %i. %0.4f%%" % (self.deadline, main_percentage_of_interval))
     self.deadline = next_task.start_before
     return True
 
