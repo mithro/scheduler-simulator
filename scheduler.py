@@ -78,6 +78,12 @@ class Task:
     self.on_run(scheduler, now)
     return now + self.length
 
+  def earlist_run(self, now):
+    if self.run_early:
+      return now
+    else:
+      return self.start_before
+
   # Methods which should be overridden
   # -------------------------------------------------
   def on_run(self, scheduler, now):
@@ -156,8 +162,9 @@ class Scheduler:
     assert task.start_before != infinity
 
     # Advance the time if the next task can't run right now.
-    if not task.run_early and task.start_before > now:
-      now = task.start_before
+    run_early = task.earlist_run(now)
+    if run_early > now:
+      now = run_early
 
     self.remove(task)
     return task.run(self, now)
@@ -272,14 +279,19 @@ class SchedulerTest(unittest.TestCase):
   def add_task(self, task):
     self.s.add_task(task)
 
-  def assertAdds(self, number):
-    self.assertEqual(number, len(self.t.adds))
+  def assertAdds(self, number=None, *expected):
+    if expected:
+      self.assertEqual("\n".join(self.t.adds), "\n".join(expected))
 
-  def assertRun(self, *expected, end_at=None):
-    now_at_end = self.s.run_all()
+    self.assertEqual(number, len(self.t.adds))
+    self.t.adds = []
+
+  def assertRun(self, *expected, start_at=None, end_at=None):
+    now_at_end = self.s.run_all(start_at or 0)
     self.assertEqual("\n".join(self.t.runs), "\n".join(expected))
     if end_at:
       self.assertEqual(end_at, now_at_end)
+    self.t.runs = []
 
   def test_simple_tasks_without_deadlines(self):
     self.add_task(Task("A", 30))
