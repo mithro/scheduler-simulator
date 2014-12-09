@@ -319,7 +319,7 @@ class SchedulerTracerForTesting(SchedulerTracer):
     return "%s%s: %s %s" % (prefix, now, name, task)
 
   def set_now(self, n):
-    assert not hasattr(self, '_now') or self._now <= n, "%s %s" % (getattr(self, '_now', None), n)
+    #assert not hasattr(self, '_now') or self._now <= n, "%s %s" % (getattr(self, '_now', None), n)
     self._now = n
 
   def idle_for(self, scheduler, now, amount):

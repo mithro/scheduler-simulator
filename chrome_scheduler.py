@@ -33,7 +33,7 @@ class ChromeState:
     return self.get_composite_task(max(self._composite_tasks.keys()))
 
 
-class MainTask(DiscardIfLateTask):
+class MainTask(Task):
 
   def earlist_run(self, now):
     return self.frame_time
@@ -46,15 +46,16 @@ class MainTask(DiscardIfLateTask):
     self.state = state
     self.frame_time = frame_time
 
-    DiscardIfLateTask.__init__(self, 
+    Task.__init__(self, 
       name = "MainTask@%i" % frame_time, 
       length = state.main_time,
-      deadline = frame_time + self.avaliable_time)
+      deadline = frame_time + self.avaliable_time,
+      discardable = True)
 
     # This check prevents us from continually discarding every main frame we
     # get because of things going horribly wrong.
     if self.state.discarded_main_frames > math.ceil(self.state.main_time / self.avaliable_time):
-      self.discard_enable = False
+      self.discardable = False
 
   def next_task(self):
     next_frame_time = self.state.last_composite_task().frame_time
@@ -115,7 +116,7 @@ class MainTask(DiscardIfLateTask):
     # Work out how late this main task can be before running into the next
     # task.
     next_task = self.next_task()
-    if not next_task.discard_enable:
+    if not next_task.discardable:
       logging.debug("Not because next_task can't be discarded. %0.4f%%" % main_percentage_of_interval)
       return False
 
@@ -127,7 +128,7 @@ class MainTask(DiscardIfLateTask):
     # The main task was unable to make the deadline, so this task is being
     # discarded.
     if self.should_requeue_without_discard(now):
-      self.discard_enable = False
+      self.discardable = False
       scheduler.add_task(self)
     else:
       self.state.discarded_main_frames += 1
@@ -176,10 +177,8 @@ class CompositeTask(Task):
       scheduler.add_task(self.next_task())
 
 
-class ChromeSingleSchedulerTest(unittest.TestCase, SchedulerTestExtra):
-
-  def setUp(self):
-    SchedulerTestExtra.setUp(self)
+class ChromeSingleSchedulerTest(SchedulerTestBase):
+  SchedulerClass = DeadlineOrderingWithAdjustmentScheduler
 
   def test_single_normal_frame(self):
     c = ChromeState(frames = 0, main_time = 2*ms)
@@ -273,11 +272,15 @@ class ChromeSingleSchedulerTest(unittest.TestCase, SchedulerTestExtra):
   maxDiff = None
 
 
+class NamedFIFOScheduler(FIFOScheduler):
+  def __lt__(self, other):
+    return self.name < other.name
+
 class MultithreadScheduler:
   def __init__(self):
-    self.main_thread = Scheduler()
+    self.main_thread = NamedFIFOScheduler()
     self.main_thread.name = "main"
-    self.composite_thread = Scheduler()
+    self.composite_thread = NamedFIFOScheduler()
     self.composite_thread.name = "comp"
 
   def add_task(self, task):
@@ -289,7 +292,8 @@ class MultithreadScheduler:
   def _next_task_on(self, nows):
     next_tasks = {}
     for thread in nows:
-      next_tasks[thread] = thread._next_task(nows[thread])
+      if thread._pending_tasks():
+        next_tasks[thread] = thread._next_task(nows[thread])
 
     earlist = min((task.earlist_run(nows[thread]), thread) for thread, task in next_tasks.items())
     return earlist[-1]
@@ -311,12 +315,12 @@ class MultithreadScheduler:
     return nows
 
 
-class ChromeMultiSchedulerTest(unittest.TestCase, SchedulerTestExtra):
+class ChromeMultiSchedulerTest(SchedulerTestBase):
 
   def setUp(self):
     self.s = MultithreadScheduler()
-    self.t = SchedulerTracer(self.s.main_thread)
-    self.t.trace_scheduler(self.s.composite_thread)
+    self.t = SchedulerTracerForTesting(self.s.main_thread)
+    self.t.trace(self.s.composite_thread)
 
   def test_single_normal_frame(self):
     c = ChromeState(frames = 1, main_time = 2*ms)
