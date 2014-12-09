@@ -15,11 +15,9 @@ This code is written in Python **3** and has the following dependencies;
 ## TODO List
 
  - [ ] Add the ability to actually generate diagrams from traces.
- - [ ] Rewrite the scheduler / tasks to allow easier tracing rather then the
-       current horrible hacks.
  - [ ] Add tasks which have uncertainty in their run duration.
  - [ ] Add tasks with unknown run duration.
- - [ ] Make `scheduler.py` just contain tasks and scheduler interface. Move
+ - [x] Make `scheduler.py` just contain tasks and scheduler interface. Move
        current scheduler implementations to different file.
  - [ ] Add support for preemption + preemptable tasks.
 
@@ -31,6 +29,7 @@ partially emulate the
 
 ## TODO List
 
+ - [ ] Make chrome_scheduler work again.
  - [ ] Add whole Commit->Activate->Draw tasks path.
  - [ ] Look at emulating the Blink scheduler tasks.
 
