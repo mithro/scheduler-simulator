@@ -1,6 +1,7 @@
 #!/bin/env python3
 
-from ..scheduler import *
+from tasks import *
+from scheduler import *
 
 class FIFOScheduler(SchedulerBase):
   """Simple first in, first out task scheduler."""

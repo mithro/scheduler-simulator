@@ -24,9 +24,9 @@ class SchedulerTracer:
 class Scheduler:
   sentinel_task = Task("sentinel", 0, deadline=infinity, run_early=False)
 
-  @property
-  def tracer(self):
-    raise NotImplemented()
+  #@property
+  #def tracer(self):
+  #  raise NotImplemented()
 
   def add_task(self, new_task):
     raise NotImplemented()
@@ -41,7 +41,7 @@ class Scheduler:
     raise NotImplemented()
 
 
-class SchedulerBase(object):
+class SchedulerBase(Scheduler):
   """Base class for all scheduler implementations."""
 
   def __init__(self):

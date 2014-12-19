@@ -1,6 +1,7 @@
 #!/bin/env python3
 
 import unittest
+import inspect
 
 from scheduler import SchedulerTracer
 
@@ -79,7 +80,7 @@ class SchedulerTestBase(unittest.TestCase):
 
   @classmethod
   def setUpClass(cls):
-      if cls is SchedulerTestBase:
+      if not hasattr(cls, 'SchedulerClass') or cls.SchedulerClass is None:
           raise unittest.SkipTest("Skip %s tests, it's a base class" % cls.__name__)
       super(SchedulerTestBase, cls).setUpClass()
 
@@ -105,42 +106,67 @@ class SchedulerTestBase(unittest.TestCase):
       self.assertEqual(end_at, now_at_end)
     self.t.clear()
 
-  def test_simple_tasks_without_deadlines(self):
-    self.add_task(Task("A", 30))
-    self.add_task(Task("B", 20))
-    self.add_task(Task("C", 10))
-    self.assertAdds(3)
-    self.assertRun(
-      "00000: Running Task('A', 30)",
-      "00030: Running Task('B', 20)",
-      "00050: Running Task('C', 10)",
-      end_at=60)
 
-  def test_single_deadline_without_run_early(self):
-    self.add_task(Task("A", 10, deadline=50, run_early=False))
-    self.assertAdds(1)
-    self.assertRun(
-      "00000: Idle for 40",
-      "00040: Running Task('A', 10, 50)",
-      end_at=50)
+class AssertTestNotImplementedHelper:
+  """Helper which returns NotImplemented functions for assertTestXXXX methods."""
+  def __getattr__(self, key):
+    if key.startswith("assertTest"):
+      def assertTestNotImplemented(*args, **kw):
+        raise NotImplementedError(key)
+      return assertTestNotImplemented
+    raise AttributeError("%s not found." % key)
 
-  def test_single_deadline_with_run_early(self):
-    self.add_task(Task("A", 10, deadline=50, run_early=True))
-    self.assertAdds(1)
-    self.assertRun(
-      "00000: Running Task('A', 10, 50)",
-      end_at=10)
- 
-  def test_multiple_deadline_without_run_early(self):
-    self.add_task(Task("A", 10, deadline=50))
-    self.add_task(Task("B", 10, deadline=100))
-    self.assertAdds(2)
-    self.assertRun(
-      "00000: Idle for 40",
-      "00040: Running Task('A', 10, 50)",
-      "00050: Idle for 40",
-      "00090: Running Task('B', 10, 100)",
-      end_at=100)
+
+class AssertTestMagicCallerHelper:
+  """Helper which returns the right assertTestXXXX method for the caller."""
+
+  @property
+  def assertTest(self):
+    NAME=3  # Function name is the third item in the tuple returned from inspect.stack()
+
+    # Try/finally needed to prevent reference counting leaks.
+    frames = inspect.stack()[1:]
+    try:
+      # Wall up the stack until we find the outermost "testXXXX" function. This
+      # allows testAAA to call testBBB and still have assertTestAAA be called.
+      while len(frames) > 1 and frames[1][NAME].startswith("test"):
+        frames.pop(0)
+    
+      # Calculate the assert name from the test name
+      caller = frames[0][NAME]
+      assert caller.startswith("test")
+      assert_name = "assert%s%s" % (caller[0].upper(), caller[1:])
+
+      # Return the assert function
+      return getattr(self, assert_name)
+    finally:
+      del frames
+
+
+class AssertTestMagiCallerHelperTest(unittest.TestCase, AssertTestMagicCallerHelper):
+
+  def testFirstCaller(self):
+    self.assertIs(self.assertTest.__name__, "assertTestFirstCaller")
+
+  def assertTestFirstCaller(self):
+    pass
+
+  # --
+
+  def testNestedCaller(self, nested=0):
+    if nested:
+      self.assertIs(self.assertTest.__name__, "assertTestOuterCaller")
+    else:
+      self.assertIs(self.assertTest.__name__, "assertTestNestedCaller")
+
+  def testOuterCaller(self):
+    self.testNestedCaller(nested=True)
+
+  def assertTestNestedCaller(self):
+    pass
+
+  def assertTestOuterCaller(self):
+    pass
 
 
 if __name__ == '__main__':
